@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Path, HTTPException, Query
 import json
-from typing import Annotated  , Literal
+from typing import Annotated  , Literal , Optional
 from pydantic import BaseModel  , Field , computed_field
 from fastapi.responses import JSONResponse
 
@@ -31,6 +31,15 @@ class Patient(BaseModel):
         else :
             return "Overweight"
         
+class Patient_update(BaseModel):
+
+    name: Annotated[Optional[str] , Field(default=None )]
+    city: Annotated[Optional[str] , Field(default=None )]
+    age :  Annotated[Optional[int]   , Field(default=None )]
+    gender: Annotated[Optional[str] ,Literal['male' , 'female' , 'others'] ,Field(default=None ) ]
+    height:  Annotated[Optional[float] , Field(default=None,gt=0 )]
+    weight :  Annotated[Optional[float], Field(default=None ,gt=0)]
+
 
 
 def load_data():
@@ -78,9 +87,9 @@ def sort_patients(sort_by :str =Query(..., description="sort on the basis of hei
     
     data=load_data()
 
-        sort_order= True if order=='desc' else False
-        sorted_data=sorted(data.values(), key=lambda x : x.get(sort_by, 0),reverse=sort_order)
-        return sorted_data 
+    sort_order= True if order=='desc' else False
+    sorted_data=sorted(data.values(), key=lambda x : x.get(sort_by, 0),reverse=sort_order) 
+    return sorted_data 
 
 
 @app.post("/create")
@@ -91,7 +100,7 @@ def create_patient(patient:Patient):
         raise HTTPException(status_code=400 , detail="Patient Id already exists")
     
     data[patient.id] = patient.model_dump(exclude=['id'])
-    
+    # some old version problem 
     patient_data_to_save = patient.model_dump(exclude=['id'])
     # STEP 2: Manually add the computed fields so they are stored in the JSON file
     #         This ensures the data is complete when read back later.
@@ -103,3 +112,55 @@ def create_patient(patient:Patient):
     save_data(data)
 
     return JSONResponse(status_code=201 , content={'message':'patient created successfully'})
+
+# ai helped me out with this logic . have to focus more on this
+@app.put("/edit/{patient_id}")
+def update_patient(patient_id: str, patient_update: Patient_update):
+    """Updates an existing patient record and recalculates BMI/Verdict."""
+
+    data = load_data()
+    if patient_id not in data:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    
+    existing_patient_info = data[patient_id]
+    
+    # 1. Get only the fields provided in the update request
+    updated_fields = patient_update.model_dump(exclude_unset=True)
+
+    # 2. Merge the provided fields into the existing record
+    for key, value in updated_fields.items():
+        existing_patient_info[key] = value
+
+    # 3. Recalculate: Create a Patient Pydantic object from the MERGED dictionary.
+    #    This is the step that performs the BMI/Verdict RECALCULATION.
+    patient_pydantic_object = Patient(id=patient_id, **existing_patient_info) 
+    
+    # 4. Generate the final dictionary to save. We dump the object which contains the NEW values.
+    patient_data_to_save = patient_pydantic_object.model_dump(exclude=['id'])
+    
+    # Manually add the newly computed fields (BMI/Verdict) so they are stored in JSON
+    patient_data_to_save['bmi'] = patient_pydantic_object.bmi        
+    patient_data_to_save['verdict'] = patient_pydantic_object.verdict  
+    
+    # 5. Save the complete, updated dictionary back to the data store
+    data[patient_id] = patient_data_to_save
+    
+    save_data(data)
+
+    return JSONResponse(status_code=202, content={'message': f"Patient ID {patient_id} updated successfully"})
+
+
+
+
+
+@app.delete("/delete/{patient_id}")
+def delete_patient(patient_id : str):
+    data=load_data()
+
+    if patient_id not in data:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    
+    del data[patient_id]
+    save_data(data)
+
+    return JSONResponse(status_code=202, content= "Patient deleted successfully")
